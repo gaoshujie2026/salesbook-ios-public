@@ -4,6 +4,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-14
@@ -30,6 +33,11 @@ jobs:
           grep -E "objectVersion|compatibilityVersion" "$PBX"
           echo "--- project files ---"
           find SalesBook -name "*.swift" | sort
+          # 把生成的工程提交回仓库：Mac 直接 clone 即含 pbxproj，无需装 XcodeGen
+          git config user.email "builder@users.noreply.github.com"
+          git config user.name "builder"
+          git add SalesBook.xcodeproj/project.pbxproj
+          git commit -m "chore: 提交生成的 Xcode 工程" && git push || echo "no change to push"
 
       - name: List available simulators
         run: xcrun simctl list devices available | head -20
