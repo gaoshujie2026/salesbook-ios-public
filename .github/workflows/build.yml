@@ -1,0 +1,81 @@
+name: Build iOS App
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode versions available
+        run: |
+          xcodebuild -version
+          ls /Applications/ | grep -i xcode || true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project (format 56 for Xcode 15 compat)
+        run: |
+          xcodegen generate
+          # XcodeGen 2.46 生成 format 77（需 Xcode 16），本 runner 是 Xcode 15.4。
+          # 工程内容是传统 PBXGroup 结构，降级 objectVersion 即可兼容。
+          PBX=SalesBook.xcodeproj/project.pbxproj
+          sed -i '' 's/objectVersion = [0-9]*/objectVersion = 56/' "$PBX"
+          sed -i '' 's/compatibilityVersion = "Xcode [0-9.]*"/compatibilityVersion = "Xcode 14.0"/' "$PBX"
+          echo "--- pbxproj header ---"
+          grep -E "objectVersion|compatibilityVersion" "$PBX"
+          echo "--- project files ---"
+          find SalesBook -name "*.swift" | sort
+
+      - name: List available simulators
+        run: xcrun simctl list devices available | head -20
+
+      - name: Build for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project SalesBook.xcodeproj \
+            -scheme SalesBook \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            > build_full.log 2>&1 || {
+              echo "===== BUILD FAILED, all error lines ====="
+              grep -E "error:|fatal error:" build_full.log | sort -u
+              echo "===== last 30 lines ====="
+              tail -30 build_full.log
+              exit 1
+            }
+          echo "===== BUILD OK ====="
+          grep -cE "warning:" build_full.log || echo "0 warnings"
+          tail -5 build_full.log
+
+      - name: Verify build output
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "SalesBook.app" -path "*Debug-iphonesimulator*" 2>/dev/null | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Build failed - no .app found"
+            exit 1
+          fi
+          # 必须有可执行二进制，空壳 .app（只有 Info.plist）不算编译成功
+          if [ ! -f "$APP_PATH/SalesBook" ]; then
+            echo "❌ $APP_PATH exists but has no executable binary (skeleton app from failed build)"
+            ls -la "$APP_PATH"
+            exit 1
+          fi
+          echo "✅ Build succeeded: $APP_PATH"
+          ls -la "$APP_PATH"
+          file "$APP_PATH/SalesBook"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SalesBook-ios
+          path: ~/Library/Developer/Xcode/DerivedData/*/Build/Products/Debug-iphonesimulator/SalesBook.app
+          retention-days: 30
